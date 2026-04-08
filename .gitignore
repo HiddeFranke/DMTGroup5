@@ -2,8 +2,9 @@
 .DS_Store
 
 # Claude
+CLAUDE.md
 CLAUDE.local.md
-.claude/settings.local.json
+.claude/
 
 # Python
 __pycache__/

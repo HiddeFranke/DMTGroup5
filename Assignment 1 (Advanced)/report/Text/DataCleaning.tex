@@ -1,0 +1,57 @@
+% !TEX root = ../main.tex
+% Task 1B: Data Cleaning and Missing Value Imputation
+% Intended as \subsection{Data cleaning} inside section 2 (Data), following 2.1 EDA.
+
+\subsection{Data cleaning}\label{sec:data-cleaning}
+
+Smartphone sensing data is inherently noisy: passive loggers occasionally record physically implausible values, users skip ESM prompts, and entire days may pass without a single interaction. Before any feature extraction we therefore (i) remove values that are clearly incorrect or extreme and (ii) impute the remaining gaps so that every patient-day receives a complete feature vector. The pipeline below was refined over 152 empirical iterations; every design decision is grounded in the resulting classification and regression performance, in the properties of the data itself, and in the missing-data literature.
+
+\subsubsection{Removing extreme and incorrect values}
+
+We adopt a two stage procedure. The first stage enforces hard domain bounds derived from the instrument definitions in Table~\ref{tab:attributes}: \texttt{mood} must lie in $[1,10]$, \texttt{circumplex.arousal} and \texttt{circumplex.valence} in $[-2,2]$, \texttt{activity} in $[0,1]$, and every duration or count variable must be non-negative. Values outside these bounds are data-entry errors rather than genuine outliers, so discarding them introduces no bias \cite{little2019statistical}. In our data only a single record violated a domain bound.
+
+The second stage targets sensor and app-usage columns, whose distributions are heavy tailed and can contain logging artefacts such as app sessions of several hours that clearly do not reflect real use. We apply a Tukey style interquartile range (IQR) filter with a conservative multiplier of $k=3$: for each sensor column we compute $Q_1$ and $Q_3$ on the pooled data and mask any value exceeding $Q_3 + 3 \cdot \mathrm{IQR}$ \cite{tukey1977eda}. We deliberately restrict IQR filtering to the passively measured sensor and app-usage variables. Subjective scales (mood, valence, arousal, activity) are already bounded and the tails there carry genuine clinical signal. Overall, 318 values (approximately 0.4\% of observations) were removed by the combined procedure. We also tested a z-score filter \cite{leys2013detecting} and a winsorising alternative: both were discarded because the z-score assumes normality, which the sensor distributions clearly violate, and winsorisation distorts the tails rather than removing errors, resulting in worse downstream regression performance in our iteration log. Figure~\ref{fig:outlier} shows the effect of the chosen approach on four representative variables; the right tails of \texttt{screen} and \texttt{call} are visibly trimmed while the subjective variables are left untouched.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{Figures/outlier_before_after.png}
+    \caption{Distributions before (red) and after (blue) the combined domain plus IQR ($k=3$) outlier procedure. Only passively measured sensor variables are affected; the subjective scales are bounded and are not touched.}
+    \label{fig:outlier}
+\end{figure}
+
+\subsubsection{Imputing missing values in the time series}
+
+After cleaning, every patient still contains missing days, both at random (skipped ESM prompts) and in prolonged blocks (device switched off, study drop-ins). Because the records form a time series the imputer must respect temporal ordering and cannot borrow information across patients. We evaluate two complementary, time-series aware approaches that are commonly recommended for this setting \cite{moritz2017imputets,little2019statistical}.
+
+\paragraph{Method 1: Last observation carried forward.} A per-patient forward fill followed by a backward fill propagates the most recent observed value until a new measurement arrives, under the assumption that a patient's state persists between samples. This is a standard baseline for intensive longitudinal data in psychology \cite{lane2019lopocd} and introduces no trend assumption. It does, however, create plateau artefacts: rapid mood changes are smeared across several days.
+
+\paragraph{Method 2: Linear interpolation.} A per-patient linear interpolation between adjacent observed values (with forward and backward fill at series boundaries) instead reconstructs the straight-line trajectory connecting neighbouring measurements. This preserves monotonic trends and is recommended whenever the underlying signal is believed to vary smoothly between samples \cite{moritz2017imputets}. For mood, whose autocorrelation at lag one is approximately $0.45$, this assumption is defensible on short gaps.
+
+\paragraph{Empirical comparison.} We compared the two methods by training the same gradient boosting regressor on the resulting daily feature matrix using a leave-five-patients-out cross-validation scheme. In our iteration 8 evaluation, linear interpolation raised the $R^2$ of the temporal GRU regressor from $-0.417$ with forward fill to $+0.127$ with interpolation, and lifted the gradient boosting baseline from $R^2 \approx 0.27$ to $R^2 \approx 0.43$. Figure~\ref{fig:impute} illustrates both reconstructions on an example patient: forward fill produces long flat plateaus while interpolation tracks the local trend. Based on both the literature and the observed downstream improvement we adopt linear interpolation.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{Figures/imputation_comparison.png}
+    \caption{Mood reconstruction for an example patient using forward fill (left, orange) and linear interpolation (right, green). Observed values are shown as dark dots. Forward fill creates visible plateaus; linear interpolation preserves local trend.}
+    \label{fig:impute}
+\end{figure}
+
+\paragraph{Handling prolonged missing periods.} Linear interpolation is defensible only for short gaps; extrapolating over two or three weeks would introduce artificial trajectories with no empirical support. We therefore extracted all consecutive missing-day runs for the mood series (Figure~\ref{fig:gaps}). Most gaps are short: the median mood gap is two days and the 95th percentile is six days, but several patients contain single gaps longer than ten days. We considered three strategies for these prolonged blocks: (1) deleting rows in a gap longer than the 7-day threshold, which in iteration 110 dropped classification macro-F1 from $0.69$ to $0.57$ because entire informative patient windows were discarded; (2) imputing the gap and then re-masking values inside blocks longer than seven days with a learned indicator; and (3) keeping the interpolated values and explicitly reporting the limitation. We adopt strategy (3): since only a handful of gaps exceed the threshold and every prolonged block is bounded on both sides by observed mood, the bias introduced is minor, while none of the available strategies returns sharply better downstream performance in our iteration log. This is consistent with the recommendation of \cite{little2019statistical} that list-wise deletion is usually worse than a principled imputation in longitudinal settings.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{Figures/mood_gaps.png}
+    \caption{Left: distribution of consecutive missing-day runs in the mood series; the dashed line marks the 7-day threshold. Right: longest mood gap per patient. Most gaps are short but a few patients contain blocks well beyond one week.}
+    \label{fig:gaps}
+\end{figure}
+
+\subsubsection{Closing adjustments}
+
+Two further steps round off the cleaning stage. First, screen and app-usage durations are strongly right-skewed, so we apply a $\log(1+x)$ transform to every duration column; this reduces the skew of \texttt{screen} from approximately $6$ to below $0.4$ (Figure~\ref{fig:log}) and was the single most impactful preprocessing change in our iteration log (classification macro-F1 improved from $0.659$ to $0.691$ in iteration 24). Second, seven app categories (\texttt{weather}, \texttt{game}, \texttt{finance}, \texttt{unknown}, \texttt{office}, \texttt{travel}, \texttt{utilities}) are sparse, with more than 80\% of patient-days missing or zero; dropping them (iteration 44) raised the GRU classification macro-F1 by $0.129$ because the temporal model no longer spent capacity fitting pure noise. The cleaned, imputed and log-transformed dataset contains 2\,154 patient-days across 27 patients and 12 feature columns, with no remaining missing entries, and is the input to every model reported in Sections~\ref{sec:feature-engineering} and~\ref{sec:evaluation}.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.9\linewidth]{Figures/log_transform.png}
+    \caption{Screen time distribution before and after the $\log(1+x)$ transform. Skewness falls from roughly 6 to below 0.4, bringing the variable into a range more suitable for tree-based and neural models.}
+    \label{fig:log}
+\end{figure}

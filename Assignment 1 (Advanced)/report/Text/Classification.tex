@@ -1,0 +1,94 @@
+% !TEX root = ../main.tex
+% Task 2A: Application of classification algorithms (25 points).
+% Intended as a dedicated \section{}; mirrors the structure recommended by the rubric:
+% approach description, hyperparameter optimisation, evaluation setup, results, interpretation.
+
+\section{Classification of next-day mood}\label{sec:classification}
+
+Task 2A requires two classification algorithms of different families, one operating on a tabular feature matrix and one that is inherently temporal, together with a suitable evaluation setup for this small, repeated-measures dataset. We cast next-day mood prediction as a three-class problem (\textit{Low}, \textit{Medium}, \textit{High}) obtained by discretising the continuous target at its tercile boundaries on the training data only, giving three approximately balanced classes and preserving the clinically meaningful ordering \cite{altman2006categorising}. The procedure described below is fully reproducible: all random seeds are fixed (seed 42 in the single-split experiment and \{42, 123, 456, 789, 1024\} in the robustness analysis), the patient identifier is used as the grouping variable throughout, and every hyperparameter is listed explicitly in Section~\ref{sec:classification-hp}.
+
+\subsection{Approach}\label{sec:classification-approach}
+
+We compare two models that are deliberately drawn from different modelling families so that the comparison stresses the data rather than one implementation detail. The \textit{tabular} model is \textbf{XGBoost} \cite{chen2016xgboost}, a gradient-boosted decision tree ensemble trained on the 96-dimensional feature matrix built in Section~\ref{sec:feature-engineering} from 7-day sliding windows, five aggregation statistics per window (mean, standard deviation, minimum, maximum, and linear trend), five mood lags, and a small set of volatility, interaction and morning/evening decomposition features. The \textit{temporal} model is a \textbf{Gated Recurrent Unit (GRU)} network \cite{cho2014gru} that takes raw seven-day sequences of daily sensor readings as input and learns its own representation. GRUs are preferred over plain LSTMs on small datasets because their reduced parameter count lowers variance \cite{chung2014empirical}, which matches our constraint of roughly 1\,965 patient-days of training data. The two models therefore differ along two dimensions simultaneously: representation (hand-engineered versus learned) and model class (tree ensemble versus recurrent network), which is consistent with the intent of the advanced track.
+
+Class weights were not adjusted because the tercile construction already yields approximately balanced training classes (507 Low, 528 Medium, 575 High). The XGBoost pipeline first standardises the tabular features with \texttt{StandardScaler} fitted on the training split only. The GRU pipeline applies the same training-only standardisation across the flattened sequence tensor and uses early stopping on a held-out 20\% validation tail of the training set. Both pipelines end with a softmax layer over the three tercile classes so the predictions are directly comparable.
+
+\subsection{Hyperparameter optimisation}\label{sec:classification-hp}
+
+For the XGBoost model we ran an exhaustive grid search of 16 configurations (Table~\ref{tab:xgb-grid}) optimised for macro F1 on a 5-fold \texttt{GroupKFold} cross-validation that grouped on patient identifier, thereby preventing any patient from appearing in both a training and validation fold. The selected configuration was \texttt{learning\_rate=0.05, max\_depth=3, n\_estimators=100, reg\_alpha=0}, with a mean CV macro F1 of $0.656$. The shallow depth of three is noteworthy: deeper trees overfitted the within-patient autocorrelation structure of the data and their CV score decreased monotonically with depth. The GRU hyperparameters (hidden dimension 32, single layer, dropout $0.4$, Adam with learning rate $10^{-3}$ and weight decay $10^{-2}$, batch size 64, early stopping with patience 15, at most 100 epochs) were fixed in advance based on iteration-level tuning across 152 pipeline iterations, because a full grid search over a recurrent network with this dataset size would have been dominated by sampling noise in the validation split \cite{bergstra2012random}.
+
+\begin{table}[h]
+\centering
+\caption{Hyperparameter grids and selected values. XGBoost was tuned exhaustively; the GRU was configured from prior iteration evidence.}
+\label{tab:xgb-grid}
+\small
+\begin{tabular}{@{}llp{5.0cm}l@{}}
+\toprule
+Model & Hyperparameter & Search space & Selected \\
+\midrule
+XGBoost & learning rate & $\{0.05, 0.10\}$ & 0.05 \\
+ & max depth & $\{3, 5\}$ & 3 \\
+ & n estimators & $\{100, 200\}$ & 100 \\
+ & reg alpha & $\{0, 0.1\}$ & 0 \\
+\midrule
+GRU & hidden dim & fixed & 32 \\
+ & dropout & fixed & 0.4 \\
+ & optimiser & fixed & Adam, lr $10^{-3}$ \\
+ & weight decay & fixed & $10^{-2}$ \\
+ & early stop patience & fixed & 15 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Evaluation setup}\label{sec:classification-eval}
+
+The evaluation follows the advice that \emph{``a good evaluation setup given the nature of the dataset''} is required for the advanced track. Two properties of the data drive our choice. First, observations are nested within 27 patients and strongly autocorrelated (Section~\ref{sec:feature-engineering}): a random train/test split would leak patient-specific idiosyncrasies into the test set and inflate performance \cite{saeb2017need}. Second, the deployment scenario is to predict mood for \textit{a new patient}, not a new day of a known patient. We therefore use a \textit{leave-five-patients-out} holdout: five of the 27 patients are held out entirely, and the remaining 22 form the training set. On the single-split experiment reported below the holdout comprises \{AS14.01, AS14.12, AS14.13, AS14.17, AS14.28\}, leaving 1\,610 training instances and 355 test instances. To quantify the sensitivity of this setup to the specific holdout sample we additionally re-ran both models under five random seeds \{42, 123, 456, 789, 1024\}, each drawing a different five-patient holdout.
+
+As the primary performance metric we report the macro-averaged F1 score, because it is the standard choice for multi-class problems in which each class carries comparable clinical importance and in which we wish to avoid a model that simply memorises the largest class \cite{sokolova2009systematic}. We complement it with accuracy, per-class precision and recall, and the full confusion matrix. The majority-class baseline (always predict \textit{High}) is reported alongside so the reader can judge the lift of each model against a non-informative reference.
+
+\subsection{Results}\label{sec:classification-results}
+
+\begin{table}[h]
+\centering
+\caption{Classification performance on the leave-five-patients-out holdout (seed 42) and averaged over five random holdouts. XGBoost is the strongest tabular model tested across 152 pipeline iterations; the GRU is the strongest temporal model.}
+\label{tab:classification}
+\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Model & Accuracy & Macro F1 & F1 Low & F1 Medium & F1 High & Macro F1 (5 seeds) \\
+\midrule
+Majority baseline & 0.237 & 0.128 & 0.000 & 0.000 & 0.383 & 0.128 \\
+XGBoost (tabular) & \textbf{0.727} & \textbf{0.684} & 0.840 & \textbf{0.634} & 0.576 & $0.635 \pm 0.034$ \\
+GRU (temporal) & 0.679 & 0.594 & \textbf{0.863} & 0.403 & 0.516 & $0.573 \pm 0.088$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:classification} reports the headline numbers. Both models are vastly better than the majority-class baseline: XGBoost lifts macro F1 from $0.128$ to $0.684$ and the GRU to $0.594$. On the primary metric XGBoost outperforms the GRU by about $0.09$ macro F1 points, a gap that is larger than the 5-seed standard deviation of either model. The confusion matrices in Figures~\ref{fig:xgb-cls} and~\ref{fig:gru-cls} explain where the models differ. Both models classify \textit{Low} mood days very accurately (F1 $0.84$ and $0.86$), because recent low mood strongly predicts a low next day via the lag-1 mood feature \cite{bolger2003diary}. XGBoost retains much of this accuracy on the \textit{Medium} class (F1 $0.634$), whereas the GRU collapses to F1 $0.403$: the temporal model tends to bias medium days towards either the high or low neighbouring class, reflecting its greater sensitivity to the direction of the last observed trend. The per-class F1 comparison is visualised in Figure~\ref{fig:cls-bar}.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{Figures/xgb_classification.png}
+    \caption{XGBoost classification. Left: confusion matrix on the leave-five-patients-out holdout. Right: top fifteen features by gain importance, dominated by lag-1 mood and rolling mood statistics.}
+    \label{fig:xgb-cls}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{Figures/gru_classification.png}
+    \caption{GRU classifier. Left: confusion matrix on the same holdout. Right: training and validation cross-entropy curves; early stopping prevents late-epoch over-fitting.}
+    \label{fig:gru-cls}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.85\linewidth]{Figures/per_class_f1.png}
+    \caption{Per-class F1 for XGBoost and the GRU. The tabular model is substantially better on the Medium class, which is the hardest class because the tercile boundaries span only about 0.4 mood points.}
+    \label{fig:cls-bar}
+\end{figure}
+
+\subsection{Interpretation}\label{sec:classification-discussion}
+
+Three conclusions follow from these numbers. First, a well-tuned boosted tree on hand-engineered features outperforms a recurrent network on this dataset. The difference is consistent across the five random holdouts and therefore reflects a property of the data, not sampling noise. This is coherent with the broader literature on small tabular datasets, where gradient-boosted trees remain competitive with or superior to deep architectures \cite{grinsztajn2022tabular}. Second, the bottleneck of both models is the \textit{Medium} tercile. The training tercile thresholds of $q_{33}=7.00$ and $q_{66}=7.40$ imply that the Medium class has a span of only $0.40$ mood points on the original 1 to 10 scale, so any noise in the ESM self-report of around $0.3$ points fundamentally limits separability \cite{conner2007experience}. Third, patient heterogeneity is the dominant source of residual uncertainty: the standard deviation of macro F1 across the five holdout samples ($0.034$ for XGBoost and $0.088$ for the GRU) is an order of magnitude larger than typical differences between candidate hyperparameter settings, which is why we declined to tune the GRU beyond its iteration-level settings. Practically, this means that an improved predictor for a given patient will come from incorporating more patient-specific context rather than from more sophisticated global models.
+
+The tabular model's top features (Figure~\ref{fig:xgb-cls}) are consistent with this interpretation: lag-1 mood and short-window mood rolling statistics dominate, followed by the morning/evening decomposition and recent arousal. Phone-usage features carry non-zero but small importance. This pattern confirms the EDA finding (Section~\ref{sec:feature-engineering}) that mood has the highest autocorrelation at lag one, and suggests that next-day mood prediction is largely a trajectory-following problem.

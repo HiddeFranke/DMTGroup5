@@ -1,0 +1,88 @@
+% !TEX root = ../main.tex
+% Task 4: Numerical prediction of next-day mood (10 points).
+% Advanced track: one temporal regressor plus one tabular regressor,
+% evaluated under MSE and MAE (the latter shared with Task 5B).
+
+\section{Numerical prediction of next-day mood}\label{sec:regression}
+
+Task 4 reformulates the problem as regression rather than discretised classification: the target is the raw next-day average mood on the original 1 to 10 Likert scale. This choice preserves information that is discarded by the tercile split used in Section~\ref{sec:classification}: a shift from mood $6.9$ to mood $7.1$ crosses a tercile boundary and changes the class label, yet is not a clinically meaningful change. The regression view is therefore complementary rather than redundant. As required by the advanced track we pair one non-temporal regressor with one inherently temporal regressor, we run both with the same leave-five-patients-out protocol as the classification task, and we report both mean squared error (MSE) and mean absolute error (MAE) because each metric emphasises a different aspect of the error distribution (Section~\ref{sec:regression-eval}).
+
+\subsection{Approach}\label{sec:regression-approach}
+
+The non-temporal regressor is a \textbf{Gradient Boosting Regressor (GBR)} \cite{friedman2001greedy} trained on the same 96-dimensional tabular feature matrix as the XGBoost classifier in Section~\ref{sec:classification}. We chose sklearn's GBR rather than XGBoost for the regression task because GBR provided the best CV $R^2$ across our 152-iteration grid and because its subsample parameter allows stochastic gradient boosting, which stabilises the fit on this relatively small dataset. The temporal regressor is a \textbf{GRU regressor} with the same architecture as the GRU classifier, except that the output layer produces a single linear value and the loss is mean squared error. Using the same recurrent architecture for both tasks allows a like-for-like comparison: any difference between the classification and regression experiments is then attributable to the target representation, not to the network. Both models receive standardised inputs fitted on the training fold only, and both use the same 80/20 training/validation split inside the training patients for early stopping.
+
+We also report a simple baseline: predicting the training-set mean for every test observation. This is the zero-information regressor and sets the reference for $R^2$ at exactly zero on the training data, so any negative $R^2$ on held-out patients signals that the model generalises worse than a constant.
+
+\subsection{Hyperparameter optimisation}\label{sec:regression-hp}
+
+The GBR hyperparameters were tuned by an exhaustive grid search (16 combinations, Table~\ref{tab:gbr-grid}) optimised for $R^2$ under 5-fold \texttt{GroupKFold} cross-validation with patient as the group. The selected configuration was \texttt{learning\_rate=0.05, max\_depth=3, n\_estimators=100, subsample=0.8}, which matches the classification-side XGBoost up to the stochastic subsampling. The GRU regressor uses the same frozen architecture as in Section~\ref{sec:classification-hp}, for the same reason: additional tuning on a dataset of this size produces differences that are indistinguishable from the variance across patient holdouts.
+
+\begin{table}[h]
+\centering
+\caption{Gradient Boosting regressor grid and selected values. The GRU regressor reuses the classification-side architecture.}
+\label{tab:gbr-grid}
+\small
+\begin{tabular}{@{}llp{4.5cm}l@{}}
+\toprule
+Model & Hyperparameter & Search space & Selected \\
+\midrule
+Gradient Boosting & learning rate & $\{0.05, 0.10\}$ & 0.05 \\
+ & max depth & $\{3, 5\}$ & 3 \\
+ & n estimators & $\{100, 200\}$ & 100 \\
+ & subsample & $\{0.8, 1.0\}$ & 0.8 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Evaluation setup}\label{sec:regression-eval}
+
+We re-use the leave-five-patients-out holdout from the classification task so that the two tasks operate on the same held-out patients, enabling a clean comparison between classifying a tercile and predicting the continuous value. We report three error metrics. $R^2$ measures the fraction of variance in next-day mood that is explained beyond a simple mean predictor: it is dimensionless and intuitively bounded above by $1$, but can be arbitrarily negative on generalisation to new patients. MSE penalises large errors quadratically and is the loss minimised by the GRU; MAE penalises errors linearly and is robust to outliers \cite{willmott2005advantages}. Reporting both means we can judge whether a model trades a few large errors for many small ones, which is the question Task 5B asks us to address.
+
+\subsection{Results}\label{sec:regression-results}
+
+\begin{table}[h]
+\centering
+\caption{Regression performance. Single-seed figures use the same holdout as the classification task (\{AS14.01, AS14.12, AS14.13, AS14.17, AS14.28\}); multi-seed figures report the mean and standard deviation across five random holdouts.}
+\label{tab:regression}
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Model & $R^2$ (seed 42) & RMSE & MAE & $R^2$ (5 seeds) & RMSE (5 seeds) \\
+\midrule
+Baseline (train mean) & $-0.142$ & 0.770 & 0.610 & $-0.15 \pm 0.12$ & $0.78 \pm 0.07$ \\
+Gradient Boosting     & \textbf{0.483} & \textbf{0.518} & \textbf{0.342} & $0.448 \pm 0.080$ & $0.579 \pm 0.084$ \\
+GRU regressor         & 0.423 & 0.547 & 0.397 & $0.411 \pm 0.064$ & $0.601 \pm 0.100$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Both candidate models clearly outperform the mean-predictor baseline on the leave-five-patients-out holdout; $R^2$ is negative for the baseline because the mean of the training patients is not the mean of the five unseen patients. Gradient Boosting achieves $R^2 = 0.483$, RMSE $0.518$ and MAE $0.342$ on seed 42, and $R^2 = 0.448 \pm 0.080$ averaged across five random holdouts. The GRU regressor sits between the baseline and GBR with $R^2 = 0.423$ and $R^2 = 0.411 \pm 0.064$ across seeds. The gap between the two models is smaller than in the classification task: about $0.04$ $R^2$ points on seed 42 and $0.04$ on the 5-seed average, which is within one standard deviation of either model. For regression, the temporal architecture closes much of the distance to the tabular model, which is intuitive: the GRU is free to discover its own internal representation of mood momentum and the loss function (MSE) does not collapse to a three-way class boundary.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.98\linewidth]{Figures/gb_regression.png}
+    \caption{Gradient Boosting regressor. Left: predictions against true mood. Centre: residual distribution with MAE $0.34$ and RMSE $0.52$. Right: top fifteen features by gain importance.}
+    \label{fig:gb-reg}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.98\linewidth]{Figures/gru_regression.png}
+    \caption{GRU regressor. Left: predictions against true mood. Centre: training and validation MSE curves. Right: residual distribution.}
+    \label{fig:gru-reg}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.9\linewidth]{Figures/regression_headline.png}
+    \caption{Headline comparison of $R^2$ and RMSE across the three regressors on seed 42. Both learned models beat the mean predictor by a wide margin; the tabular GBR leads the GRU by a small and seed-dependent amount.}
+    \label{fig:reg-headline}
+\end{figure}
+
+Figure~\ref{fig:gb-reg} shows that GBR predictions are well aligned with the diagonal between mood $6$ and mood $8$ but compress toward the training mean at the extremes, which is the known variance-bias trade-off of gradient boosting \cite{friedman2001greedy}. The residual distribution is approximately symmetric around zero with fatter tails in the negative direction (over-predictions on low-mood days). Figure~\ref{fig:gru-reg} reveals a similar residual shape for the GRU but a slightly wider MSE (reflected in the RMSE of $0.55$ compared to GBR's $0.52$) and a training curve that flattens quickly. The GRU's residuals still show the same compression around the mean, indicating that the dominant source of error is not the choice of representation but the narrow effective range of the outcome.
+
+\subsection{Interpretation and comparison with classification}\label{sec:regression-discussion}
+
+The two tasks tell a consistent but non-redundant story. \textit{Comparison of difficulty}: both tasks achieve non-trivial but modest performance, with classification macro F1 $\approx 0.68$ and regression $R^2 \approx 0.48$. The classification task appears slightly stronger only because it discretises the hardest part of the prediction problem: whether the patient was Low, Medium or High rather than exactly what number. \textit{Comparison of sensitivity}: the tabular model beats the temporal model more clearly in classification than in regression, because the GRU's smooth output is genuinely useful for capturing small day-to-day changes that the tercile split would round away. \textit{Comparison of error modes}: MAE and RMSE diverge in the expected direction, MAE $= 0.34$ versus RMSE $= 0.52$ for GBR. MAE$<$RMSE by a factor of $1.5$ in both models, implying an error distribution with a few relatively large mis-predictions dominating the squared loss while the typical error is small. This is consistent with the residual histograms in Figures~\ref{fig:gb-reg} and~\ref{fig:gru-reg}. In Section~\ref{sec:metric-impact} we exploit this gap explicitly: if we were to select a model on MSE alone we would push it towards smoothing out high-mood spikes, whereas selecting on MAE would trade a few large misses for overall crispness. Both choices are defensible, but the decision depends on the downstream clinical use.
+
+Practically, the regression view is also more informative for a clinician than the tercile classification, because it preserves the magnitude of change. We therefore regard the regression results as the more informative output of this pipeline, with the classification results offering a complementary coarse-grained view that is easier to communicate in a self-monitoring application. The fact that the tabular model wins both tasks underlines the finding from Section~\ref{sec:classification-discussion} that the bottleneck on this dataset is not the choice of architecture but the quantity of per-patient data.

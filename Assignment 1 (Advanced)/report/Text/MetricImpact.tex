@@ -1,0 +1,37 @@
+% !TEX root = ../main.tex
+% Task 5B: Impact of evaluation metrics (6 points).
+% Numbers come directly from notebooks/task_5b_metric_impact.ipynb, which now
+% uses the same pipeline as Task 4 (Section 5) so the MSE-trained model IS
+% the Gradient Boosting regressor reported in Chapter 5.
+
+\section{Impact of evaluation metrics}\label{sec:metric-impact}
+
+The Gradient Boosting regressor in Section~\ref{sec:regression} is already an MSE-minimiser: sklearn's default \texttt{GradientBoostingRegressor} uses \texttt{loss="squared\_error"}, which is MSE up to a constant. Task 5B therefore amounts to a single controlled experiment: retrain that exact model once more with \texttt{loss="absolute\_error"} (MAE) and compare the two. Pipeline, features, hyperparameters and the leave-five-patients-out split are held identical to Section~\ref{sec:regression}; only the loss changes. The MSE-trained row in Table~\ref{tab:metric-impact} is therefore the same Gradient Boosting model that appears in Table~\ref{tab:regression}.
+
+\begin{table}[h]
+\centering
+\caption{Test-set MSE and MAE for the Section~\ref{sec:regression} Gradient Boosting regressor (\texttt{loss="squared\_error"}) and a second copy that differs only in the training loss (\texttt{loss="absolute\_error"}).}
+\label{tab:metric-impact}
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Loss used during training & MSE & MAE \\
+\midrule
+Squared error (MSE) & \textbf{0.269} & \textbf{0.343} \\
+Absolute error (MAE) & 0.418 & 0.486 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The MSE-minimiser wins on both reported metrics, including MAE itself. A model fitted to absolute error should, in principle, beat its sibling on test absolute error, so the result requires explanation. It comes from the shape of the mood distribution. Mood is bounded in $[1,10]$ and concentrated within roughly one standard deviation of its training mean of $7.05$, which means the median predictor (which absolute-error minimisation tends towards \cite{willmott2005advantages}) is close to the mean predictor. The MAE-trained model therefore flattens towards that common point across patients, losing the variance information the MSE-trained model retains, and ends up with larger errors on both tails. The right panel of Figure~\ref{fig:metric-residuals} makes this visible: the MAE-trained residuals are not shifted, they are simply more spread out.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{Figures/metric_impact_residuals.png}
+    \caption{Residuals of the two Gradient Boosting regressors on the leave-five-patients-out test set. Left: overlapping histograms; the MAE-trained model has heavier tails. Right: per-model boxplots; the MAE-trained model has a wider interquartile range.}
+    \label{fig:metric-residuals}
+\end{figure}
+
+Of the 355 held-out test samples, 29 ($8\%$) of the MSE-trained model's residuals exceed one mood point in absolute value, against 42 ($12\%$) for the MAE-trained model. A residual above one point on a 10-point scale is the kind of miss that would mislead a self-monitoring application, for instance predicting mood $7$ on a day where the true value is $5$. Because squared error penalises those large misses quadratically during training, the MSE-trained model produces fewer of them on test as well.
+
+The implication for this dataset is that MSE is the better criterion for training and model selection, while MAE remains the more useful reporting metric because its units are directly interpretable (mean mood points off). Iteration~75 of our pipeline reinforces the same conclusion in reverse: a Huber loss, which is a compromise between MSE and MAE, was tested against squared error and produced no measurable gain. The mood target is already cleaned, bounded and not heavy-tailed, so an outlier-robust loss has nothing to robustify against. Section~\ref{sec:regression} therefore continues to report both metrics, and we train and select on squared error.
